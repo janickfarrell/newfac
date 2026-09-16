@@ -1,0 +1,62 @@
+name: Daily calendar update
+
+on:
+  schedule:
+    # Every day at 00:10 UTC
+    - cron: "10 0 * * *"
+  # Allow manual runs from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Full history: every month from 2007 up to the current month
+      - name: Run scraper (2007 → today)
+        run: python forexfactory_scraper.py "2007-$(date -u +%Y)"
+
+      # Publish the CSV as an asset of a rolling release (tag: calendar-data).
+      # gh CLI is preinstalled on ubuntu-latest runners.
+      - name: Upload CSV to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view calendar-data >/dev/null 2>&1 || \
+            gh release create calendar-data \
+              --title "Forex Factory calendar data" \
+              --notes "Auto-updated daily at 00:10 UTC. Coverage: 2007-01-01 → run date. Stable asset: forexfactory_calendar.csv"
+          gh release upload calendar-data forexfactory_calendar.csv --clobber
+
+      # A tiny dated commit keeps the repo "active" — GitHub pauses scheduled
+      # workflows after 60 days without any repository activity.
+      - name: Heartbeat commit (keeps schedule alive)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          date -u +"%Y-%m-%d %H:%M UTC" > LAST_RUN.txt
+          git add LAST_RUN.txt
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: daily run $(date -u +'%Y-%m-%d')"
+            git push
+          fi
